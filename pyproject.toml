@@ -1,0 +1,57 @@
+[project]
+name = "easyaivtuber-1-1-0"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "flask-restful>=0.3.10",
+    "gradio>=5.33.2",
+    "librosa>=0.11.0",
+    "matplotlib>=3.10.3",
+    "mediapipe>=0.10.21",
+    "numpy>=1.26.4",
+    "opencv-python>=4.8.0",
+    "pillow>=11.2.1",
+    "protobuf>=4.25.8",
+    "pyanime4k==2.5.2",
+    "pygame>=2.6.1",
+    "pynput>=1.8.1",
+    "pyvirtualcam>=0.13.0",
+    "scipy>=1.15.3",
+    "torch>=2.6.0",
+    "torchaudio>=2.6.0",
+    "torchvision>=0.21.0",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+explicit = true
+
+ [[tool.uv.index]]
+ name = "pytorch-cu124"
+ url = "https://mirror.nju.edu.cn/pytorch/whl/cu124"
+ explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+  { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[tool.uv.pip]
+index-url = "https://mirrors.aliyun.com/pypi/simple/"
+
+[tool.deptry]
+# 告诉 deptry 如何将包名映射到导入的模块名
+[tool.deptry.package_module_name_map]
+"opencv-python" = ["cv2"]
+"pillow" = ["PIL"]
+"flask-restful" = ["flask_restful"]
+"pyvirtualcam" = ["pyvirtualcam"]
+"wxpython" = ["wx"] # 'wx' 模块通常由 'wxPython' 包提供
