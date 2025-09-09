@@ -1,3 +1,6 @@
+import base64
+from loguru import logger
+
 import torch
 import cv2
 import pyvirtualcam
@@ -80,7 +83,7 @@ class ModelClientProcess(Process):
     def run(self):
         model = TalkingAnime3().to(self.device)
         model = model.eval()
-        logging.info("模型进程: 预训练模型已加载")
+        logger.info("模型进程: 预训练模型已加载")
 
         eyebrow_vector = torch.empty(1, 12, dtype=torch.half if args.model.endswith('half') else torch.float)
         mouth_eye_vector = torch.empty(1, 27, dtype=torch.half if args.model.endswith('half') else torch.float)
@@ -111,7 +114,7 @@ class ModelClientProcess(Process):
                 input_image = self.input_image_q.get_nowait().to(self.device)
                 model.face_cache = OrderedDict()
                 model_cache = OrderedDict()
-                logging.info("模型进程: 角色图像已更新")
+                logger.info("模型进程: 角色图像已更新")
 
             model_input = None
             try:
@@ -293,7 +296,7 @@ def prepare_input_img(IMG_WIDTH, charc):
     extra_image = None
     if img.size[1] > IMG_WIDTH:
         extra_image = np.array(img.crop((0, IMG_WIDTH, img.size[0], img.size[1])))
-    logging.info(f"角色图像已加载: {charc}")
+    logger.info(f"角色图像已加载: {charc}")
     return input_image, extra_image
 
 
@@ -338,9 +341,9 @@ class EasyAIV(Process):
                                           {'unitycapture': pyvirtualcam.PixelFormat.RGBA,
                                            'obs': pyvirtualcam.PixelFormat.RGB}[
                                               args.output_webcam])
-                logging.info(f'主进程: 虚拟摄像头已启动: {cam.device}')
+                logger.info(f'主进程: 虚拟摄像头已启动: {cam.device}')
             except Exception as e:
-                logging.error(f"主进程: 启动虚拟摄像头失败: {e}")
+                logger.error(f"主进程: 启动虚拟摄像头失败: {e}")
                 cam = None
 
         a = None
@@ -354,9 +357,9 @@ class EasyAIV(Process):
                     type=ac.ProcessorType.OpenCL_ACNet,
                 )
                 a.set_arguments(parameters)
-                logging.info("主进程: Anime4K 已加载")
+                logger.info("主进程: Anime4K 已加载")
             except Exception as e:
-                logging.error(f"主进程: 加载 Anime4K 失败: {e}")
+                logger.error(f"主进程: 加载 Anime4K 失败: {e}")
                 a = None
                 args.anime4k = False
 
@@ -369,7 +372,7 @@ class EasyAIV(Process):
         action = ActionAnimeV2()
         idle_start_time = time.perf_counter()
 
-        logging.info("主进程: 准备就绪。关闭此控制台以退出。")
+        logger.info("主进程: 准备就绪。关闭此控制台以退出。")
 
         while True:
             # time.sleep(fps_delay)
@@ -406,7 +409,7 @@ class EasyAIV(Process):
                     current_action = "idle"
 
             # 新增日志
-            # logging.info(f"主进程: 当前动作 - {current_action}")
+            # logger.info(f"主进程: 当前动作 - {current_action}")
 
             if not idle_flag:
                 idle_start_time = time.perf_counter()
@@ -430,7 +433,7 @@ class EasyAIV(Process):
             except queue.Empty:
                 pass
             if model_output is None:
-                logging.warning("主进程: 尚未收到模型输出，等待1秒...")
+                logger.warning("主进程: 尚未收到模型输出，等待1秒...")
                 time.sleep(1)
                 continue
 
@@ -482,37 +485,46 @@ class EasyAIV(Process):
 
             # 新增: 将帧发送到web输出队列
             try:
-                # 清空队列以保证低延迟，只保留最新的一帧
-                while not self.web_output_q.empty():
-                    self.web_output_q.get_nowait()
+                # 正確且安全的清空佇列的方法
+                try:
+                    while True:
+                        # 不斷地從佇列中取出項目，直到它拋出 Empty 異常
+                        self.web_output_q.get_nowait()
+                except queue.Empty:
+                    # 當接到 Empty 異常時，代表佇列已經被清空。
+                    # 這不是一個錯誤，而是我們期望的結果，所以我們用 pass 忽略它。
+                    pass
 
-                # 将 RGBA 图像转换为 JPEG
-                # JPEG 不支持 alpha 通道，所以我们将其转换为 BGR
-                jpeg_frame = cv2.cvtColor(postprocessed_image, cv2.COLOR_RGBA2BGR)
-                ret, buffer = cv2.imencode('.jpg', jpeg_frame)
-                frame_bytes = buffer.tobytes()
-                self.web_output_q.put_nowait(frame_bytes)
+                # --- 佇列清空完畢，後續的程式碼不變 ---
+                bgra_image = cv2.cvtColor(postprocessed_image, cv2.COLOR_RGBA2BGRA)
+
+                ret, buffer = cv2.imencode('.png', bgra_image)
+                if ret:
+                    frame_bytes = buffer.tobytes()
+                    self.web_output_q.put_nowait(frame_bytes)
+
             except queue.Full:
-                # 如果队列已满，则忽略此帧
+                # 如果佇列已滿（極低機率發生，因為我們剛清空），則忽略此幀
                 pass
             except Exception as e:
-                logging.error(f"主进程: 发送帧到Web队列时出错: {e}")
+                # 保留這個區塊，以捕捉其他真正未預期的錯誤
+                logger.error(f"主进程: 发送帧到Web队列时发生未知错误: repr={repr(e)}", exc_info=True)
 
 
 class FlaskAPI(Resource):
     def post(self):
         parser = reqparse.RequestParser()
-        parser.add_argument('type', required=True)
+        parser.add_argument('type', required=True, help="Type field cannot be blank!")
         parser.add_argument('speech_path', default=None)
         parser.add_argument('music_path', default=None)
         parser.add_argument('voice_path', default=None)
         parser.add_argument('mouth_offset', default=0.0)
         parser.add_argument('beat', default=2)
         parser.add_argument('img', default=None)
+        parser.add_argument('audio_data', default=None)  # 用于接收音频流数据
         json_args = parser.parse_args()
 
-        # 新增日志: 记录收到的请求
-        logging.info(f"API: 收到请求, 类型: {json_args['type']}, 参数: {dict(json_args)}")
+        logger.info(f"API: 收到请求, 类型: {json_args['type']}")
 
         try:
             global alive
@@ -521,6 +533,60 @@ class FlaskAPI(Resource):
                     alive.speak(json_args['speech_path'])
                 else:
                     return {"status": "Need speech_path!! 0.0", "receive args": json_args}, 400
+
+            elif json_args['type'] == "speak_from_stream":
+                audio_data = json_args['audio_data']
+                if audio_data:
+                    audio_bytes = None
+                    try:
+                        # --- 关键修改：处理两种不同的数据格式 ---
+
+                        # 检查是否是客户端发送的字节列表字符串格式，例如 "[82, 73, ...]"
+                        if isinstance(audio_data, str) and audio_data.strip().startswith('['):
+                            logger.info("API:检测到字节列表字符串格式，正在尝试解析...")
+                            # 移除首尾的 '[' 和 ']'
+                            cleaned_str = audio_data.strip()[1:-1]
+                            # 按逗号分割，并将每个部分转换成整数
+                            # 添加 s.strip() 以处理数字周围的空格
+                            # 添加 if s.strip() 以处理由于尾部逗号产生的空字符串
+                            byte_list = [int(s.strip()) for s in cleaned_str.split(',') if s.strip()]
+                            # 从整数列表创建 bytes 对象
+                            audio_bytes = bytes(byte_list)
+                            logger.info(f"API:成功从字符串列表中解析了 {len(audio_bytes)} 字节。")
+
+                        # 否则，假定是标准的 Base64 字符串
+                        elif isinstance(audio_data, str):
+                            logger.info("API:检测到Base64字符串格式，正在尝试解码...")
+                            audio_data_b64 = audio_data.replace(' ', '+')
+                            missing_padding = len(audio_data_b64) % 4
+                            if missing_padding != 0:
+                                audio_data_b64 += '=' * (4 - missing_padding)
+                                logger.warning(f"API: 收到不正确的Base64 padding, 已自动修复。")
+                            audio_bytes = base64.b64decode(audio_data_b64)
+                            logger.info(f"API:成功从Base64解码了 {len(audio_bytes)} 字节。")
+
+                        else:
+                            error_msg = f"Invalid data type for audio_data. Expected string, but got {type(audio_data).__name__}."
+                            logger.error(f"API: {error_msg}")
+                            return {"status": "Invalid audio_data format", "error": error_msg}, 400
+
+                        # 如果成功获取了 audio_bytes，则调用方法
+                        if audio_bytes is not None:
+                            alive.speak_from_stream(audio_bytes)
+                        else:
+                            # 这是一个备用情况，理论上不应该发生
+                            raise ValueError("未能从接收的数据中提取音频字节。")
+
+                    except (ValueError, TypeError, base64.binascii.Error) as e:
+                        # 捕获所有可能的解析或解码错误
+                        logger.error(
+                            f"API: 处理音频流时出错。收到的数据 (前100字符): {str(json_args['audio_data'])[:100]}")
+                        logger.error(f"API: 解析/解码错误: {e}", exc_info=True)
+                        return {"status": "Error processing audio stream",
+                                "error": f"Failed to parse or decode audio data: {e}"}, 400
+                else:
+                    return {"status": "Need audio_data!! 0.0", "receive args": json_args}, 400
+
             elif json_args['type'] == "rhythm":
                 if json_args['music_path']:
                     alive.rhythm(json_args['music_path'], int(json_args['beat']))
@@ -537,24 +603,23 @@ class FlaskAPI(Resource):
                 alive_args["is_speech"].value = False
                 alive_args["is_singing"].value = False
                 alive_args["is_music_play"].value = False
-                logging.info("API: 所有动作已停止")
+                logger.info("API: 所有动作已停止")
             elif json_args['type'] == "change_img":
                 if json_args['img']:
                     global model_process_args
                     input_image, _ = prepare_input_img(512, json_args['img'])
                     model_process_args['input_image_q'].put_nowait(input_image)
-                    logging.info(f"API: 角色图像已更改为 {json_args['img']}")
+                    logger.info(f"API: 角色图像已更改为 {json_args['img']}")
                 else:
                     return {"status": "Need img!! 0.0", "receive args": json_args}, 400
             else:
-                logging.warning(f"API: 未知的请求类型 '{json_args['type']}'")
+                logger.warning(f"API: 未知的请求类型 '{json_args['type']}'")
         except Exception as ex:
-            logging.error(f"API: 处理请求时发生错误: {ex}")
+            # 增加 exc_info=True 来获取完整的堆栈跟踪，便于调试
+            logger.error(f"API: 处理请求时发生错误: {ex}", exc_info=True)
             return {'status': 'error', 'message': str(ex)}, 500
 
         return {'status': "success"}, 200
-
-
 # 新增: 用于生成视频流的函数
 def gen_frames(q):
     while True:
@@ -563,13 +628,13 @@ def gen_frames(q):
             frame = q.get(timeout=1.0)
             # 使用 multipart/x-mixed-replace 格式产出帧
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                   b'Content-Type: image/png\r\n\r\n' + frame + b'\r\n')
         except queue.Empty:
             # 如果队列为空，继续等待下一帧
-            logging.debug("Web视频流队列为空，等待中...")
+            logger.debug("Web视频流队列为空，等待中...")
             continue
         except Exception as e:
-            logging.error(f"生成视频流帧时出错: {e}")
+            logger.error(f"生成视频流帧时出错: {e}")
             break
 
 
@@ -608,16 +673,16 @@ def video_feed():
 
 
 if __name__ == '__main__':
-    # 使用 logging 替代 print
-    logging.info(f"CUDA 可用: {torch.cuda.is_available()}")
+    # 使用 logger 替代 print
+    logger.info(f"CUDA 可用: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
-        logging.info(f"CUDA 版本: {torch.version.cuda}")
-        logging.info(f"cuDNN 版本: {torch.backends.cudnn.version()}")
-        logging.info(f"设备数量: {torch.cuda.device_count()}")
-        logging.info(f"设备名称: {torch.cuda.get_device_name(0)}")
+        logger.info(f"CUDA 版本: {torch.version.cuda}")
+        logger.info(f"cuDNN 版本: {torch.backends.cudnn.version()}")
+        logger.info(f"设备数量: {torch.cuda.device_count()}")
+        logger.info(f"设备名称: {torch.cuda.get_device_name(0)}")
 
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
-    logging.info(f"使用的设备: {device}")
+    logger.info(f"使用的设备: {device}")
 
     input_image, extra_image = prepare_input_img(512, args.character)
 
@@ -656,7 +721,7 @@ if __name__ == '__main__':
     api.add_resource(FlaskAPI, '/alive')
 
     # 运行 Flask app
-    logging.info(f"Flask 服务器正在启动，请在浏览器中打开 http://127.0.0.1:{args.port}/")
+    logger.info(f"Flask 服务器正在启动，请在浏览器中打开 http://127.0.0.1:{args.port}/")
     app.run(host='0.0.0.0', port=args.port, threaded=True)  # threaded=True 允许多个客户端同时连接
 
-    logging.info('所有进程已结束。')
+    logger.info('所有进程已结束。')

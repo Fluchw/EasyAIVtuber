@@ -1,3 +1,9 @@
+import tempfile
+import sounddevice as sd
+import soundfile as sf
+import io
+import tempfile
+import os
 import numpy as np
 from multiprocessing import Value, Process, Queue
 import librosa
@@ -78,6 +84,54 @@ class Alive(Process):
         except Exception as ex:
             print(ex)
             error_speech()
+
+    def speak_from_stream(self, audio_bytes: bytes):
+        """
+        接收音频字节流，进行处理和播放。
+        :param audio_bytes: 包含完整音频数据（如 .wav 或 .mp3 格式）的字节串。
+        """
+        temp_file_path = None
+        try:
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                tmp_file.write(audio_bytes)
+                temp_file_path = tmp_file.name
+
+
+            voice_times, voice_strengths = generate_voice_data(temp_file_path)
+
+            self.speech_q.put_nowait({
+                'voice_strengths': voice_strengths,
+                'voice_times': np.array(voice_times) + time.perf_counter() - 0.15
+            })
+            self.is_speech.value = True
+
+            # --- 第3步: 使用 sounddevice 直接播放内存中的音频字节 ---
+            # 1. 从字节流中读取音频数据和采样率
+            #    使用 io.BytesIO 将 bytes 伪装成一个内存文件
+            audio_data, samplerate = sf.read(io.BytesIO(audio_bytes))
+
+            # 2. 播放 NumPy 数组
+            sd.play(audio_data, samplerate)
+
+            # 3. 等待播放完成
+            #    注意：sd.wait() 是一个阻塞操作。在实际多线程应用中，
+            #    您可能需要更复杂的逻辑来检查播放状态，而不是直接阻塞。
+            #    但为了演示，我们先用简单的方式。
+            sd.wait()
+
+            self.is_speech.value = False
+
+        except Exception as ex:
+            print(ex)
+            error_speech()
+        finally:
+            # --- 第4步: 清理磁盘上的临时文件 ---
+            if temp_file_path and os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+            # sd.stop() # 确保在出错时停止播放
+            # self.is_speech.value = False # 确保状态被重置
 
     def sing(self, music_path, voice_path, mouth_offset, beat):
         try:
